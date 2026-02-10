@@ -62,10 +62,10 @@
           runtimeDeps = with pkgs; [
             libglvnd
             wayland
-            xorg.libX11
-            xorg.libXcursor
-            xorg.libxcb
-            xorg.libXi
+            libx11
+            libxcursor
+            libxcb
+            libxi
             libxkbcommon
             vulkan-loader
             libei
@@ -121,16 +121,17 @@
               libxkbcommon
               libinput
               mesa
+              libgbm
               fontconfig
               stdenv.cc.cc.lib
               pixman
               libdisplay-info
               libei
               libglvnd
-              xorg.libX11
-              xorg.libXcursor
-              xorg.libXi
-              xorg.libxcb
+              libx11
+              libxcursor
+              libxi
+              libxcb
               vulkan-loader
             ];
 
