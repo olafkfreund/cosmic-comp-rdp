@@ -379,6 +379,7 @@ fn capabilities_from_mask(mask: u64) -> Vec<DeviceCapability> {
 /// shell read lock. Used by touch events that need both the seat and the
 /// surface target but must release the lock before calling into Smithay
 /// (which needs `&mut State`).
+#[allow(clippy::type_complexity)]
 fn resolve_touch_target(
     state: &State,
     x: f64,
@@ -403,6 +404,14 @@ fn resolve_touch_target(
     (seat, under)
 }
 
+/// Returns `true` if the value is finite (not NaN or infinity).
+fn is_finite_f64(v: f64) -> bool {
+    v.is_finite()
+}
+
+/// Maximum valid evdev keycode (KEY_MAX from linux/input-event-codes.h).
+const MAX_EVDEV_KEYCODE: u32 = 0x2FF;
+
 /// Process a single EIS input event by injecting it into the compositor's
 /// Smithay input stack.
 fn process_eis_event(state: &mut State, event: EisInputEvent) {
@@ -410,6 +419,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
 
     match event {
         EisInputEvent::KeyboardKey { keycode, pressed } => {
+            if keycode > MAX_EVDEV_KEYCODE {
+                warn!(keycode, "Rejecting keyboard event: keycode out of range");
+                return;
+            }
             let seat = state.common.shell.read().seats.last_active().clone();
             if let Some(keyboard) = seat.get_keyboard() {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -429,6 +442,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::PointerMotion { dx, dy } => {
+            if !is_finite_f64(dx) || !is_finite_f64(dy) {
+                warn!("Rejecting pointer motion: non-finite delta");
+                return;
+            }
             let seat = state.common.shell.read().seats.last_active().clone();
             if let Some(pointer) = seat.get_pointer() {
                 let current = pointer.current_location();
@@ -447,6 +464,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::PointerMotionAbsolute { x, y } => {
+            if !is_finite_f64(x) || !is_finite_f64(y) {
+                warn!("Rejecting absolute pointer motion: non-finite coordinates");
+                return;
+            }
             let seat = state.common.shell.read().seats.last_active().clone();
             if let Some(pointer) = seat.get_pointer() {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -484,6 +505,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::Scroll { dx, dy } => {
+            if !is_finite_f64(dx) || !is_finite_f64(dy) {
+                warn!("Rejecting scroll event: non-finite delta");
+                return;
+            }
             let seat = state.common.shell.read().seats.last_active().clone();
             if let Some(pointer) = seat.get_pointer() {
                 use smithay::backend::input::Axis;
@@ -499,6 +524,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::TouchDown { touch_id, x, y } => {
+            if !is_finite_f64(x) || !is_finite_f64(y) {
+                warn!("Rejecting touch down: non-finite coordinates");
+                return;
+            }
             let (seat, under) = resolve_touch_target(state, x, y);
             if let Some(touch) = seat.get_touch() {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -516,6 +545,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::TouchMotion { touch_id, x, y } => {
+            if !is_finite_f64(x) || !is_finite_f64(y) {
+                warn!("Rejecting touch motion: non-finite coordinates");
+                return;
+            }
             let (seat, under) = resolve_touch_target(state, x, y);
             if let Some(touch) = seat.get_touch() {
                 touch.motion(

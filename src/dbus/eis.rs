@@ -67,11 +67,11 @@ impl CosmicCompEis {
             let bus_name: zbus::names::BusName<'_> = (*allowed)
                 .try_into()
                 .map_err(|e| zbus::fdo::Error::Failed(format!("invalid bus name: {e}")))?;
-            if let Ok(owner) = dbus_proxy.get_name_owner(bus_name).await {
-                if owner.as_str() == sender.as_str() {
-                    authorized = true;
-                    break;
-                }
+            if let Ok(owner) = dbus_proxy.get_name_owner(bus_name).await
+                && owner.as_str() == sender.as_str()
+            {
+                authorized = true;
+                break;
             }
         }
 
@@ -85,7 +85,33 @@ impl CosmicCompEis {
             ));
         }
 
-        let stream = UnixStream::from(std::os::fd::OwnedFd::from(fd));
+        // Verify the fd is a UNIX stream socket (not a file, pipe, etc.)
+        let raw_fd = std::os::fd::OwnedFd::from(fd);
+        {
+            use std::os::fd::AsRawFd;
+            let mut sock_type: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            let ret = unsafe {
+                libc::getsockopt(
+                    raw_fd.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_TYPE,
+                    std::ptr::addr_of_mut!(sock_type).cast(),
+                    std::ptr::addr_of_mut!(len),
+                )
+            };
+            if ret != 0 || sock_type != libc::SOCK_STREAM {
+                warn!(
+                    sender = sender.as_str(),
+                    "Rejected AcceptEisSocket: fd is not a SOCK_STREAM socket"
+                );
+                return Err(zbus::fdo::Error::InvalidArgs(
+                    "fd must be a SOCK_STREAM Unix socket".into(),
+                ));
+            }
+        }
+
+        let stream = UnixStream::from(raw_fd);
         info!(sender = sender.as_str(), "Accepted EIS socket via D-Bus");
         self.sender
             .tx
