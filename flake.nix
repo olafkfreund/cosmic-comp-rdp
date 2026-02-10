@@ -71,6 +71,27 @@
             libei
           ];
 
+          # Force-link graphics libraries that wgpu/iced dlopen at runtime.
+          # Equivalent to what libcosmicAppHook does in nixos-cosmic.
+          forceLinkedLibs = [
+            "-lEGL"
+            "-lwayland-client"
+            "-lwayland-egl"
+            "-lxkbcommon"
+            "-lX11"
+            "-lX11-xcb"
+            "-lXcursor"
+            "-lXi"
+            "-lxcb"
+            "-lvulkan"
+          ];
+
+          forceRustFlags = builtins.concatStringsSep " " (
+            [ "-C link-arg=-Wl,--push-state,--no-as-needed" ]
+            ++ map (l: "-C link-arg=${l}") forceLinkedLibs
+            ++ [ "-C link-arg=-Wl,--pop-state" ]
+          );
+
           craneArgs = {
             pname = "cosmic-comp";
             version = self.rev or "dirty";
@@ -105,9 +126,17 @@
               pixman
               libdisplay-info
               libei
+              libglvnd
+              xorg.libX11
+              xorg.libXcursor
+              xorg.libXi
+              xorg.libxcb
+              vulkan-loader
             ];
 
             runtimeDependencies = runtimeDeps;
+
+            CARGO_BUILD_RUSTFLAGS = forceRustFlags;
           };
 
           cargoArtifacts = craneLib.buildDepsOnly craneArgs;
