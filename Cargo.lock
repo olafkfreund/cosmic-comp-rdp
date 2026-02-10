@@ -2615,7 +2615,7 @@ dependencies = [
 [[package]]
 name = "id_tree"
 version = "1.8.0"
-source = "git+https://github.com/Drakulix/id-tree.git?branch=feature%2Fcopy_clone#632a57d6d49160e18d7300fa7edae52281ec5482"
+source = "git+https://github.com/Drakulix/id-tree.git?rev=632a57d6d49160e18d7300fa7edae52281ec5482#632a57d6d49160e18d7300fa7edae52281ec5482"
 dependencies = [
  "snowflake",
 ]

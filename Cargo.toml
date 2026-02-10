@@ -92,8 +92,8 @@ cgmath = "0.18.0"
 reis = { version = "0.5", features = ["tokio"] }
 
 [dependencies.id_tree]
-branch = "feature/copy_clone"
 git = "https://github.com/Drakulix/id-tree.git"
+rev = "632a57d6d49160e18d7300fa7edae52281ec5482"
 
 [dependencies.smithay]
 version = "0.7.0"
