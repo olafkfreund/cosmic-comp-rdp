@@ -136,6 +136,16 @@ fn run_eis_server(
     socket: UnixStream,
     tx: channel::Sender<EisInputEvent>,
 ) -> anyhow::Result<()> {
+    /// Send an event to the compositor channel, returning from the enclosing
+    /// function if the channel is closed.
+    macro_rules! send_or_return {
+        ($tx:expr, $event:expr) => {
+            if $tx.send($event).is_err() {
+                debug!("Compositor channel closed");
+                return Ok(());
+            }
+        };
+    }
     let context = eis::Context::new(socket)?;
 
     // Perform server-side handshake
@@ -204,61 +214,35 @@ fn run_eis_server(
             match eis_request {
                 EisRequest::KeyboardKey(key_evt) => {
                     let pressed = key_evt.state == eis::keyboard::KeyState::Press;
-                    if tx
-                        .send(EisInputEvent::KeyboardKey {
-                            keycode: key_evt.key,
-                            pressed,
-                        })
-                        .is_err()
-                    {
-                        debug!("Compositor channel closed");
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::KeyboardKey {
+                        keycode: key_evt.key,
+                        pressed,
+                    });
                 }
                 EisRequest::PointerMotion(motion) => {
-                    if tx
-                        .send(EisInputEvent::PointerMotion {
-                            dx: f64::from(motion.dx),
-                            dy: f64::from(motion.dy),
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::PointerMotion {
+                        dx: f64::from(motion.dx),
+                        dy: f64::from(motion.dy),
+                    });
                 }
                 EisRequest::PointerMotionAbsolute(motion) => {
-                    if tx
-                        .send(EisInputEvent::PointerMotionAbsolute {
-                            x: f64::from(motion.dx_absolute),
-                            y: f64::from(motion.dy_absolute),
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::PointerMotionAbsolute {
+                        x: f64::from(motion.dx_absolute),
+                        y: f64::from(motion.dy_absolute),
+                    });
                 }
                 EisRequest::Button(btn) => {
                     let pressed = btn.state == eis::button::ButtonState::Press;
-                    if tx
-                        .send(EisInputEvent::Button {
-                            button: btn.button,
-                            pressed,
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::Button {
+                        button: btn.button,
+                        pressed,
+                    });
                 }
                 EisRequest::ScrollDelta(scroll) => {
-                    if tx
-                        .send(EisInputEvent::Scroll {
-                            dx: f64::from(scroll.dx),
-                            dy: f64::from(scroll.dy),
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::Scroll {
+                        dx: f64::from(scroll.dx),
+                        dy: f64::from(scroll.dy),
+                    });
                 }
                 EisRequest::Disconnect => {
                     info!("EIS client disconnected");
@@ -283,48 +267,28 @@ fn run_eis_server(
                     // Acknowledged implicitly
                 }
                 EisRequest::TouchDown(touch) => {
-                    if tx
-                        .send(EisInputEvent::TouchDown {
-                            touch_id: touch.touch_id,
-                            x: f64::from(touch.x),
-                            y: f64::from(touch.y),
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::TouchDown {
+                        touch_id: touch.touch_id,
+                        x: f64::from(touch.x),
+                        y: f64::from(touch.y),
+                    });
                 }
                 EisRequest::TouchMotion(touch) => {
-                    if tx
-                        .send(EisInputEvent::TouchMotion {
-                            touch_id: touch.touch_id,
-                            x: f64::from(touch.x),
-                            y: f64::from(touch.y),
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::TouchMotion {
+                        touch_id: touch.touch_id,
+                        x: f64::from(touch.x),
+                        y: f64::from(touch.y),
+                    });
                 }
                 EisRequest::TouchUp(touch) => {
-                    if tx
-                        .send(EisInputEvent::TouchUp {
-                            touch_id: touch.touch_id,
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::TouchUp {
+                        touch_id: touch.touch_id,
+                    });
                 }
                 EisRequest::TouchCancel(touch) => {
-                    if tx
-                        .send(EisInputEvent::TouchCancel {
-                            touch_id: touch.touch_id,
-                        })
-                        .is_err()
-                    {
-                        return Ok(());
-                    }
+                    send_or_return!(tx, EisInputEvent::TouchCancel {
+                        touch_id: touch.touch_id,
+                    });
                 }
                 EisRequest::Frame(_) => {
                     // Frame boundaries - we process events individually
@@ -355,6 +319,34 @@ fn capabilities_from_mask(mask: u64) -> Vec<DeviceCapability> {
         }
     }
     caps
+}
+
+/// Resolve the surface under a given position, acquiring and releasing the
+/// shell read lock. Used by touch events that need both the seat and the
+/// surface target but must release the lock before calling into Smithay
+/// (which needs `&mut State`).
+fn resolve_touch_target(
+    state: &State,
+    x: f64,
+    y: f64,
+) -> (
+    smithay::input::Seat<State>,
+    Option<(
+        <State as smithay::input::SeatHandler>::PointerFocus,
+        smithay::utils::Point<f64, smithay::utils::Logical>,
+    )>,
+) {
+    let shell = state.common.shell.read();
+    let seat = shell.seats.last_active().clone();
+    let position = (x, y).into();
+    let under = shell
+        .outputs()
+        .find(|output| output.geometry().to_f64().contains(position))
+        .and_then(|output| {
+            State::surface_under(position, output, &shell)
+                .map(|(target, pos)| (target, pos.as_logical()))
+        });
+    (seat, under)
 }
 
 /// Process a single EIS input event by injecting it into the compositor's
@@ -453,18 +445,7 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::TouchDown { touch_id, x, y } => {
-            let shell = state.common.shell.read();
-            let seat = shell.seats.last_active().clone();
-            let position = (x, y).into();
-            let under = shell
-                .outputs()
-                .find(|output| output.geometry().to_f64().contains(position))
-                .and_then(|output| {
-                    State::surface_under(position, output, &shell)
-                        .map(|(target, pos)| (target, pos.as_logical()))
-                });
-            std::mem::drop(shell);
-
+            let (seat, under) = resolve_touch_target(state, x, y);
             if let Some(touch) = seat.get_touch() {
                 let serial = SERIAL_COUNTER.next_serial();
                 touch.down(
@@ -481,18 +462,7 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::TouchMotion { touch_id, x, y } => {
-            let shell = state.common.shell.read();
-            let seat = shell.seats.last_active().clone();
-            let position = (x, y).into();
-            let under = shell
-                .outputs()
-                .find(|output| output.geometry().to_f64().contains(position))
-                .and_then(|output| {
-                    State::surface_under(position, output, &shell)
-                        .map(|(target, pos)| (target, pos.as_logical()))
-                });
-            std::mem::drop(shell);
-
+            let (seat, under) = resolve_touch_target(state, x, y);
             if let Some(touch) = seat.get_touch() {
                 touch.motion(
                     state,
