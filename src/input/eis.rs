@@ -101,32 +101,43 @@ impl EisState {
     /// Rejects the connection if the maximum number of concurrent connections
     /// has been reached.
     pub fn add_connection(&self, socket: UnixStream) {
-        let current = self.active_connections.load(Ordering::Acquire);
-        if current >= MAX_EIS_CONNECTIONS {
-            warn!(
+        // Atomically check-and-increment to avoid TOCTOU race.
+        loop {
+            let current = self.active_connections.load(Ordering::Acquire);
+            if current >= MAX_EIS_CONNECTIONS {
+                warn!(
+                    current,
+                    max = MAX_EIS_CONNECTIONS,
+                    "Rejecting EIS connection: limit reached"
+                );
+                return;
+            }
+            if self.active_connections.compare_exchange(
                 current,
-                max = MAX_EIS_CONNECTIONS,
-                "Rejecting EIS connection: limit reached"
-            );
-            return;
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ).is_ok() {
+                break;
+            }
         }
-
-        self.active_connections.fetch_add(1, Ordering::AcqRel);
         let tx = self.tx.clone();
         let counter = Arc::clone(&self.active_connections);
-        info!(
-            active = current + 1,
-            "Accepting new EIS client connection"
-        );
+        let active = self.active_connections.load(Ordering::Acquire);
+        info!(active, "Accepting new EIS client connection");
 
-        std::thread::spawn(move || {
-            let result = run_eis_server(socket, tx);
-            let remaining = counter.fetch_sub(1, Ordering::AcqRel) - 1;
-            match result {
-                Ok(()) => info!(active = remaining, "EIS connection closed"),
-                Err(err) => error!(active = remaining, "EIS server error: {}", err),
-            }
-        });
+        let thread_name = format!("eis-client-{active}");
+        std::thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                let result = run_eis_server(socket, tx);
+                let remaining = counter.fetch_sub(1, Ordering::AcqRel) - 1;
+                match result {
+                    Ok(()) => info!(active = remaining, "EIS connection closed"),
+                    Err(err) => error!(active = remaining, "EIS server error: {}", err),
+                }
+            })
+            .expect("failed to spawn EIS thread");
     }
 }
 
@@ -189,13 +200,23 @@ fn run_eis_server(
             }
         };
     }
-    let context = eis::Context::new(socket)?;
+    let context = eis::Context::new(socket)
+        .map_err(|e| anyhow::anyhow!("failed to create EIS context from socket: {e}"))?;
 
     // Perform server-side handshake
     let handshake_resp = eis_handshake(&context)?;
-    info!(
-        "EIS handshake complete, client={:?}, context_type={:?}",
-        handshake_resp.name, handshake_resp.context_type
+    // Truncate client name to prevent log flooding from malicious clients.
+    let client_name: String = handshake_resp
+        .name
+        .as_deref()
+        .unwrap_or("<unknown>")
+        .chars()
+        .take(128)
+        .collect();
+    debug!(
+        client = %client_name,
+        context_type = ?handshake_resp.context_type,
+        "EIS handshake complete"
     );
 
     // Create the request converter which manages seats, devices, and events
@@ -315,7 +336,9 @@ fn run_eis_server(
                         |_| {},
                     );
                     device.resumed();
-                    converter.handle().flush().ok();
+                    if let Err(e) = converter.handle().flush() {
+                        warn!("Failed to flush EIS device announcement: {e}");
+                    }
                 }
                 EisRequest::DeviceStartEmulating(_) | EisRequest::DeviceStopEmulating(_) => {
                     // Acknowledged implicitly
@@ -412,6 +435,9 @@ fn is_finite_f64(v: f64) -> bool {
 /// Maximum valid evdev keycode (KEY_MAX from linux/input-event-codes.h).
 const MAX_EVDEV_KEYCODE: u32 = 0x2FF;
 
+/// Maximum touch slot ID (generous upper bound; real devices rarely exceed 20).
+const MAX_TOUCH_ID: u32 = 256;
+
 /// Process a single EIS input event by injecting it into the compositor's
 /// Smithay input stack.
 fn process_eis_event(state: &mut State, event: EisInputEvent) {
@@ -484,6 +510,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::Button { button, pressed } => {
+            if button > MAX_EVDEV_KEYCODE {
+                warn!(button, "Rejecting button event: code out of range");
+                return;
+            }
             let seat = state.common.shell.read().seats.last_active().clone();
             if let Some(pointer) = seat.get_pointer() {
                 let serial = SERIAL_COUNTER.next_serial();
@@ -524,6 +554,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::TouchDown { touch_id, x, y } => {
+            if touch_id > MAX_TOUCH_ID {
+                warn!(touch_id, "Rejecting touch down: ID out of range");
+                return;
+            }
             if !is_finite_f64(x) || !is_finite_f64(y) {
                 warn!("Rejecting touch down: non-finite coordinates");
                 return;
@@ -545,6 +579,10 @@ fn process_eis_event(state: &mut State, event: EisInputEvent) {
             }
         }
         EisInputEvent::TouchMotion { touch_id, x, y } => {
+            if touch_id > MAX_TOUCH_ID {
+                warn!(touch_id, "Rejecting touch motion: ID out of range");
+                return;
+            }
             if !is_finite_f64(x) || !is_finite_f64(y) {
                 warn!("Rejecting touch motion: non-finite coordinates");
                 return;
