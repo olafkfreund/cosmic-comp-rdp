@@ -23,9 +23,7 @@ impl EisSocketSender {
 }
 
 /// Allowed D-Bus well-known names that may call `AcceptEisSocket`.
-const ALLOWED_CALLERS: &[&str] = &[
-    "org.freedesktop.impl.portal.desktop.cosmic",
-];
+const ALLOWED_CALLERS: &[&str] = &["org.freedesktop.impl.portal.desktop.cosmic"];
 
 /// D-Bus interface for the compositor to accept EIS socket fds.
 pub struct CosmicCompEis {
