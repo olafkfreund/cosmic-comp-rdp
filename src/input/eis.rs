@@ -23,7 +23,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::{debug, error, info, warn};
 
-use crate::shell::seats::SeatExt;
+use crate::shell::SeatExt;
 use crate::state::State;
 use crate::utils::geometry::{Global, PointExt, PointGlobalExt};
 use crate::utils::prelude::OutputExt;
@@ -220,7 +220,7 @@ fn process_eis_request(
             let shell = state.common.shell.read();
             let seat = shell.seats.last_active().clone();
             if let Some(pointer) = seat.get_pointer() {
-                let position: smithay::utils::Point<f64, smithay::utils::Global> = (x, y).into();
+                let position: smithay::utils::Point<f64, Global> = (x, y).into();
 
                 // Find the output containing this position
                 let output = shell
